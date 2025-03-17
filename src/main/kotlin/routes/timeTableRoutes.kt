@@ -85,10 +85,10 @@ fun Route.timeTableRoutes(
             }
 
             // Process the uploaded file
-            val timeTables = excelService.parseExcelFile(file.inputStream())
+            val timeTables = excelService.parseExcelFile(file!!.inputStream())
 
             // Save timetables associated with the user ID
-            val ids = firestoreService.saveTimetables(userId, timeTables)
+            val ids = firestoreService.saveTimetables(userId!!, timeTables)
 
             call.respond(
                 HttpStatusCode.OK,
@@ -96,7 +96,7 @@ fun Route.timeTableRoutes(
                     message = "Upload successful",
                     note = "user id :$userId",
                     count = timeTables.size,
-                    ids = ids
+                    ids = ids.ids
                 )
             )
 

@@ -2,7 +2,7 @@ runtime: java21
 env: standard
 instance_class: F2
 
-entrypoint: "java -jar build/libs/ktor-sample-all.jar"
+entrypoint: "java -jar build/libs/uniplan-backend-all.jar"
 #  shell: "java -jar build/libs/ktor-sample-all.jar"
 # ... rest of your app.yaml
 #"entrypoint": {

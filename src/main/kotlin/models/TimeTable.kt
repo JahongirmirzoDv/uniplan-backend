@@ -17,7 +17,7 @@ data class TimeTable(
 
 @Serializable
 data class UploadResponse(
-    val message: String,
+    val message: String = "",
     val note: String = "",
     val error: String = "",
     val count: Int = 0,

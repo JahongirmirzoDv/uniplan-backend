@@ -1,52 +1,93 @@
 package services
 
-import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.FirestoreOptions
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import models.TimeTable
+import models.UploadResponse
 import java.io.FileInputStream
+import java.util.concurrent.TimeUnit
 
 class FirestoreService {
-    private val firestore = FirestoreOptions.newBuilder()
-        .setProjectId("server-uniplan") // Change to the correct Firestore project ID
-        .setDatabaseId("timetable")
-        .build()
-        .service
-
+    private val firestore: Firestore
     private val usersCollection = "users" // Main users collection
 
-    // Save timetables under the user's subcollection
-    fun saveTimetables(userId: String, timetables: List<TimeTable>): List<String> {
+    init {
+        // Load credentials from environment variable or file
+        val options = FirestoreOptions.getDefaultInstance().toBuilder()
+            .setProjectId("server-uniplan")
+            .setDatabaseId("timetable")
+
+        // Google App Engine will use the service account automatically
+        // This is for local development
+        val credentialsPath = System.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            ?: "service-account.json"
+
+        try {
+            val credentials = FileInputStream(credentialsPath).use {
+                FirestoreOptions.getDefaultInstance().service.options.credentialsProvider.credentials
+            }
+            options.setCredentials(credentials)
+        } catch (e: Exception) {
+            // In production, will use the default credentials
+            println("Using default credentials: ${e.message}")
+        }
+
+        firestore = options.build().service
+    }
+
+    // Save timetables under the user's subcollection with duplicate check
+    fun saveTimetables(userId: String, timetables: List<TimeTable>): UploadResponse {
         println("Saving timetables for user: $userId")
         println("Number of timetables to save: ${timetables.size}")
 
         val batch = firestore.batch()
         val documentIds = mutableListOf<String>()
+        val duplicates = mutableListOf<TimeTable>()
 
         val userCollection = firestore.collection(usersCollection)
             .document(userId)
             .collection("timetables")
 
+        // First, check for duplicates
         timetables.forEach { timetable ->
-            // Debug: Print each timetable to verify its contents
-            println("Timetable to save: $timetable")
+            // Check if a similar timetable already exists
+            val query = userCollection
+                .whereEqualTo("group", timetable.group)
+                .whereEqualTo("day", timetable.day)
+                .whereEqualTo("date", timetable.date)
+                .whereEqualTo("startTime", timetable.startTime)
+                .whereEqualTo("className", timetable.className)
+                .whereEqualTo("teacherName", timetable.teacherName)
+                .limit(1)
+                .get()
+                .get(30, TimeUnit.SECONDS)
 
-            // Ensure timetable has all required fields
-            if (isValidTimetable(timetable)) {
-                val docRef = userCollection.document()
-                batch.set(docRef, timetable)
-                documentIds.add(docRef.id)
+            if (query.isEmpty) {
+                // No duplicate found, add to batch
+                if (isValidTimetable(timetable)) {
+                    val docRef = userCollection.document()
+                    batch.set(docRef, timetable)
+                    documentIds.add(docRef.id)
+                }
             } else {
-                println("Invalid timetable found: $timetable")
+                // Duplicate found
+                duplicates.add(timetable)
             }
         }
 
         try {
-            batch.commit().get() // Synchronous commit to catch errors
-            println("Successfully saved ${documentIds.size} timetables")
-            return documentIds
+            // Only commit if there are non-duplicate entries
+            if (documentIds.isNotEmpty()) {
+                batch.commit().get(30, TimeUnit.SECONDS)
+                println("Successfully saved ${documentIds.size} timetables")
+            }
+
+            return UploadResponse(
+                message = "Upload successful",
+                note = "Saved ${documentIds.size} timetables, ${duplicates.size} duplicates skipped",
+                count = documentIds.size,
+                ids = documentIds
+            )
         } catch (e: Exception) {
             println("Error saving timetables: ${e.message}")
             e.printStackTrace()
@@ -59,29 +100,30 @@ class FirestoreService {
         // Clean the userId by removing 'userId=' prefix if present
         val cleanUserId = userId.removePrefix("userId=").trim()
 
-        println("Cleaned User ID: $cleanUserId")
+        println("Getting timetables for user: $cleanUserId")
 
         val collectionRef = firestore.collection(usersCollection)
             .document(cleanUserId)
             .collection("timetables")
 
-        val snapshot = collectionRef.get().get()
+        val snapshot = collectionRef.get().get(30, TimeUnit.SECONDS)
 
         println("Total documents found: ${snapshot.documents.size}")
 
         return snapshot.documents.mapNotNull { document ->
-            document.toObject(TimeTable::class.java).copy(id = document.id)
+            document.toObject(TimeTable::class.java)?.copy(id = document.id)
         }
     }
 
     // Get timetables for a specific group within a user's collection
     fun getTimeTablesByGroup(userId: String, group: String): List<TimeTable> {
+        val cleanUserId = userId.removePrefix("userId=").trim()
         val query = firestore.collection(usersCollection)
-            .document(userId)
+            .document(cleanUserId)
             .collection("timetables")
             .whereEqualTo("group", group)
             .get()
-            .get()
+            .get(30, TimeUnit.SECONDS)
 
         return query.documents.mapNotNull {
             it.toObject(TimeTable::class.java)?.copy(id = it.id)
@@ -90,12 +132,13 @@ class FirestoreService {
 
     // Get a specific timetable by ID within a user's collection
     fun getTimeTable(userId: String, timetableId: String): TimeTable? {
+        val cleanUserId = userId.removePrefix("userId=").trim()
         val docRef = firestore.collection(usersCollection)
-            .document(userId)
+            .document(cleanUserId)
             .collection("timetables")
             .document(timetableId)
 
-        val snapshot = docRef.get().get()
+        val snapshot = docRef.get().get(30, TimeUnit.SECONDS)
         return if (snapshot.exists()) {
             snapshot.toObject(TimeTable::class.java)?.copy(id = snapshot.id)
         } else {
@@ -104,37 +147,47 @@ class FirestoreService {
     }
 
     // Delete all timetables for a specific user
-    fun deleteAllTimetables(userId: String) {
+    fun deleteAllTimetables(userId: String): Int {
         val cleanUserId = userId.removePrefix("userId=").trim()
         val collectionRef = firestore.collection(usersCollection)
             .document(cleanUserId)
             .collection("timetables")
 
-        val documents = collectionRef.get().get()
+        val documents = collectionRef.get().get(30, TimeUnit.SECONDS)
         val batch = firestore.batch()
+        val count = documents.size()
 
         documents.documents.forEach { document ->
             batch.delete(document.reference)
         }
 
-        batch.commit()
+        batch.commit().get(30, TimeUnit.SECONDS)
+        return count
     }
 
     // Delete a specific timetable for a user
-    fun deleteTimetable(userId: String, timetableId: String) {
+    fun deleteTimetable(userId: String, timetableId: String): Boolean {
+        val cleanUserId = userId.removePrefix("userId=").trim()
         val docRef = firestore.collection(usersCollection)
-            .document(userId)
+            .document(cleanUserId)
             .collection("timetables")
             .document(timetableId)
 
-        docRef.delete()
+        return try {
+            docRef.delete().get(30, TimeUnit.SECONDS)
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 }
 
-// Validation helper function
+// Improved validation helper function
 private fun isValidTimetable(timetable: TimeTable): Boolean {
-    // Add your validation logic here
-    // For example:
     return timetable.group.isNotBlank() &&
-            timetable.day.isNotBlank()
+            timetable.day.isNotBlank() &&
+            timetable.startTime.isNotBlank() &&
+            timetable.endTime.isNotBlank() &&
+            timetable.className.isNotBlank() &&
+            timetable.teacherName.isNotBlank()
 }
