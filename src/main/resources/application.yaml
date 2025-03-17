@@ -1,0 +1,15 @@
+ktor:
+  deployment:
+    port: 8080
+  application:
+    modules:
+      - uz.mobiledv.ApplicationKt.module
+
+#database:
+#  jdbcURL: "jdbc:postgresql://localhost:5432/timetable_db"
+#  driverClassName: "org.postgresql.Driver"
+#  username: "postgres"
+#  password: "2004"
+
+#runtime: java21
+#entrypoint: 'java -jar google-appengine-standard-all.jar'
