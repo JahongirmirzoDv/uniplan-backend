@@ -70,7 +70,7 @@ class FirestoreService {
         println("Total documents found: ${snapshot.documents.size}")
 
         return snapshot.documents.mapNotNull { document ->
-            document.toObject(TimeTable::class.java)?.copy(id = document.id)
+            document.toObject(TimeTable::class.java).copy(id = document.id)
         }
     }
 
